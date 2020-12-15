@@ -8,9 +8,9 @@
     @copyright: 2016 by MOEX
 """
 
-import urllib2
+import urllib.request, urllib.error, urllib.parse
 import base64
-import cookielib
+import http.cookiejar
 import json
 
 
@@ -38,7 +38,7 @@ class MicexAuth:
 
     def __init__(self, config):
         self.config = config
-        self.cookie_jar = cookielib.CookieJar()
+        self.cookie_jar = http.cookiejar.CookieJar()
         self.auth()
 
     def auth(self):
@@ -46,12 +46,12 @@ class MicexAuth:
         """
         # opener for https authorization
         if self.config.proxy_url:
-            opener = urllib2.build_opener(urllib2.ProxyHandler({"http": self.config.proxy_url}),
-                                          urllib2.HTTPCookieProcessor(self.cookie_jar),
-                                          urllib2.HTTPHandler(debuglevel=self.config.debug_level))
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": self.config.proxy_url}),
+                                          urllib.request.HTTPCookieProcessor(self.cookie_jar),
+                                          urllib.request.HTTPHandler(debuglevel=self.config.debug_level))
         else:
-            opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(self.cookie_jar),
-                                          urllib2.HTTPHandler(debuglevel=self.config.debug_level))
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.cookie_jar),
+                                          urllib.request.HTTPHandler(debuglevel=self.config.debug_level))
         opener.addheaders = [('Authorization',
                               'Basic %s' % base64.encodestring(self.config.user + ':' + self.config.password)[:-1])]
         get_cert = opener.open(self.config.auth_url)
@@ -63,7 +63,7 @@ class MicexAuth:
                 self.passport = cookie
                 break
         if self.passport is None:
-            print "Cookie not found!"
+            print("Cookie not found!")
 
     def is_real_time(self):
         """ repeat auth request if failed last time or cookie expired
@@ -105,13 +105,13 @@ class MicexISSClient:
             containet: user's container class
         """
         if config.proxy_url:
-            self.opener = urllib2.build_opener(urllib2.ProxyHandler({"http": config.proxy_url}),
-                                               urllib2.HTTPCookieProcessor(auth.cookie_jar),
-                                               urllib2.HTTPHandler(debuglevel=config.debug_level))
+            self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({"http": config.proxy_url}),
+                                               urllib.request.HTTPCookieProcessor(auth.cookie_jar),
+                                               urllib.request.HTTPHandler(debuglevel=config.debug_level))
         else:
-            self.opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(auth.cookie_jar),
-                                               urllib2.HTTPHandler(debuglevel=config.debug_level))
-        urllib2.install_opener(self.opener)
+            self.opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(auth.cookie_jar),
+                                               urllib.request.HTTPHandler(debuglevel=config.debug_level))
+        urllib.request.install_opener(self.opener)
         self.handler = handler(container)
 
     def get_history_securities(self, engine, market, board, date):

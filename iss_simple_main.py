@@ -28,12 +28,12 @@ class MyData:
         self.history = []
 
     def print_history(self):
-        print "=" * 49
-        print "|%15s|%15s|%15s|" % ("SECID", "CLOSE", "TRADES")
-        print "=" * 49
+        print("=" * 49)
+        print("|%15s|%15s|%15s|" % ("SECID", "CLOSE", "TRADES"))
+        print("=" * 49)
         for sec in self.history:
-            print "|%15s|%15.2f|%15d|" % (sec[0], sec[1], sec[2])
-        print "=" * 49
+            print("|%15s|%15.2f|%15d|" % (sec[0], sec[1], sec[2]))
+        print("=" * 49)
 
 
 class MyDataHandler(MicexISSDataHandler):
@@ -62,4 +62,4 @@ if __name__ == '__main__':
     try:
         main()
     except:
-        print "Sorry:", sys.exc_type, ":", sys.exc_value
+        print("Sorry:", sys.exc_info()[0], ":", sys.exc_info()[1])
