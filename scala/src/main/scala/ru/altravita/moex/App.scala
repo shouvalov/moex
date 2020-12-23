@@ -2,33 +2,46 @@ package ru.altravita.moex
 
 import com.opencsv.CSVWriter
 import io.circe.{Decoder, Json}
+import scopt.OptionParser
 
 import java.io._
 import java.net._
 import java.text.NumberFormat
-import java.time.{LocalDate, LocalDateTime}
+import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.stream.Collectors
 import scala.collection.JavaConverters._
 
 object App {
-  final private val displayDays    = 20
-  final private val displaySecs    = 999
-  final private val outputFileName = s"moex-${LocalDateTime.now.format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))}.csv"
+
+  /** Описание API Moscow Exchange:
+    * https://www.moex.com/a2193
+    * https://fs.moex.com/files/6523
+    */
+
+  /** Число строк, которое moex-сервер должен отдавать в запросе.
+    * Допустимые значения - 100, 50, 20, 10, 5, 1. *
+    */
+  final val limit = 100
+
+  /** Максимальное число запросов к серверу для получения данных по одной акции.
+    * Сервер отдаёт данные постранично. В запросе указываются параметры
+    *   limit (максимальное число строк в ответе)
+    *   start (с какой строки возвращать данные)
+    */
+  final val maxQueryCount = 100
 
   // format: off
-  final private val secIds = Seq(
-    "SBER", "GAZP", "LKOH", "GMKN", "CHMF", "ROSN", "TATN", "MGNT", "PLZL", "YNDX", "NLMK", "POLY", "MOEX", "MAGN",
-    "AFKS", "NVTK", "VTBR", "SBERP", "IRAO", "AFLT", "SNGSP", "DSKY", "ALRS", "MTSS", "FIVE", "SNGS", "MAIL"
-  ).take(displaySecs)
+//  final private val secIds = Seq(
+//    "SBER", "GAZP", "LKOH", "GMKN", "CHMF", "ROSN", "TATN", "MGNT", "PLZL", "YNDX", "NLMK", "POLY", "MOEX", "MAGN",
+//    "AFKS", "NVTK", "VTBR", "SBERP", "IRAO", "AFLT", "SNGSP", "DSKY", "ALRS", "MTSS", "FIVE", "SNGS", "MAIL"
+//  ).take(displaySecs)
   // format: on
 
   final private val dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
 
   // Структуры, описывающие json-данные для исторических котировок
-  case class History(columns: Seq[String], data: Seq[HistoryData])
-
-  case class HistoryData(date: LocalDate, secId: String, price: BigDecimal)
+  case class HistoryPrice(date: LocalDate, secId: String, price: BigDecimal)
 
   /**  json выглядит так:
     *  {
@@ -41,20 +54,16 @@ object App {
     *    ]
     *  }}
     */
-  implicit val decodeHistory: Decoder[History] = c => {
+  implicit val decodeHistory: Decoder[Seq[HistoryPrice]] = c => {
     for {
-      columns <- c.downField("history").downField("columns").as[Seq[String]]
-      tuple   <- c.downField("history").downField("data").as[Seq[(String, String, BigDecimal)]]
+      tuples <- c.downField("history").downField("data").as[Seq[(String, String, BigDecimal)]]
     } yield {
-      val data = tuple.map { case (dateStr, secId, closePrice) => HistoryData(LocalDate.parse(dateStr, dateFormatter), secId, closePrice) }
-      History(columns, data)
+      tuples.map { case (dateStr, secId, closePrice) => HistoryPrice(LocalDate.parse(dateStr, dateFormatter), secId, closePrice) }
     }
   }
 
   // Структуры, описывающие json-данные для текущих котировок
-  case class Market(columns: Seq[String], data: Seq[MarketData])
-
-  case class MarketData(priceUpdateTime: String, secId: String, price: BigDecimal)
+  case class CurrentPrice(priceUpdateTime: String, secId: String, price: BigDecimal)
 
   /**  json выглядит так:
     *  {
@@ -67,13 +76,40 @@ object App {
     *    ]
     *  }}
     */
-  implicit val decodeMarket: Decoder[Market] = c => {
+  implicit val decodeCurrent: Decoder[Seq[CurrentPrice]] = c => {
     for {
-      columns <- c.downField("marketdata").downField("columns").as[Seq[String]]
-      tuple   <- c.downField("marketdata").downField("data").as[Seq[(String, String, BigDecimal)]]
+      tuples <- c.downField("marketdata").downField("data").as[Seq[(String, String, BigDecimal)]]
     } yield {
-      val data = tuple.map { case (timeStr, secId, closePrice) => MarketData(timeStr, secId, closePrice) }
-      Market(columns, data)
+      tuples.map { case (timeStr, secId, closePrice) => CurrentPrice(timeStr, secId, closePrice) }
+    }
+  }
+
+  case class Candle(begin: String, end: String, priceOpen: BigDecimal, priceClose: BigDecimal)
+
+  /**  json выглядит так:
+    *      {
+    *      "candles": {
+    *        "metadata": {
+    *          "begin": {"type": "datetime", "bytes": 19, "max_size": 0},
+    *          "end": {"type": "datetime", "bytes": 19, "max_size": 0},
+    *          "open": {"type": "double"},
+    *          "close": {"type": "double"}
+    *        },
+    *        "columns": ["begin", "end", "open", "close"],
+    *        "data": [
+    *          ["2020-12-22 09:50:00", "2020-12-22 09:59:59", 210, 210],
+    *          ["2020-12-22 10:00:00", "2020-12-22 10:09:59", 210, 209.8],
+    *          ["2020-12-22 10:10:00", "2020-12-22 10:19:59", 209.8, 210.2],
+    *          ["2020-12-22 10:20:00", "2020-12-22 10:29:59", 210.16, 209.84],
+    *          ["2020-12-22 10:30:00", "2020-12-22 10:39:59", 209.98, 209.98]
+    *        ]
+    *      }}
+    */
+  implicit val decodeCandles: Decoder[Seq[Candle]] = c => {
+    for {
+      tuple <- c.downField("candles").downField("data").as[Seq[(String, String, BigDecimal, BigDecimal)]]
+    } yield {
+      tuple.map { case (beginStr, endStr, openPrice, closePrice) => Candle(beginStr, endStr, openPrice, closePrice) }
     }
   }
 
@@ -87,30 +123,39 @@ object App {
   }
 
   def formatPrice(price: BigDecimal): String =
-    NumberFormat.getNumberInstance.format(price)
+    //NumberFormat.getNumberInstance.format(price)
+    price.toString()
 
   /** Возвращает список цен на акцию по датам в виде Map( дата -> цена ) */
   def getArchivePrices(secId: String, from: LocalDate, till: LocalDate): Map[ /*date:*/ LocalDate, /*price:*/ BigDecimal] = {
-    val url =
-      s"http://iss.moex.com/iss/history/engines/stock/markets/shares/boards/TQBR/securities/$secId.json" +
-        s"?from=${from.format(dateFormatter)}" +
-        s"&till=${till.format(dateFormatter)}" +
-        s"&iss.meta=off&history.columns=TRADEDATE,SECID,LEGALCLOSEPRICE"
+    val pages = (0 until maxQueryCount).view
+      .map { start =>
+        val url =
+          s"http://iss.moex.com/iss/history/engines/stock/markets/shares/boards/TQBR/securities/${URLEncoder.encode(secId, "UTF-8")}.json" +
+            s"?from=${from.format(dateFormatter)}" +
+            s"&till=${till.format(dateFormatter)}" +
+            s"&iss.meta=off&history.columns=TRADEDATE,SECID,LEGALCLOSEPRICE" +
+            s"&limit=$limit" +
+            s"&start=${limit * start}"
 
-    val json = download(url)
+        println(url)
 
-    val history = json.hcursor.as[History] match {
-      case Left(failure) => throw failure
-      case Right(value)  => value
-    }
+        val json = download(url)
 
-    history.data.map(row => row.date -> row.price).toMap
+        val historyPricesPage = json.hcursor.as[Seq[HistoryPrice]] match {
+          case Left(failure) => throw failure
+          case Right(value)  => value
+        }
+
+        historyPricesPage
+      }
+      .takeWhile(page => page.nonEmpty) // Если запрос вернул менее 'limit' строк, значит следующий запрос вернёт 0 строк и выполнять его нет смысла.
+
+    pages.flatMap(historyPage => historyPage.map(row => row.date -> row.price)).toMap
   }
 
-  case class CurrentPriceInfo(updateTime: String, price: BigDecimal)
-
-  /** Возвращает список текущих цен на акцию */
-  def getCurrentPrices(secIds: Seq[String]): Map[ /*secId:*/ String, CurrentPriceInfo] = {
+  /** Возвращает список текущих цен на акции */
+  def getCurrentPrices(secIds: Set[String]): Map[ /*secId:*/ String, CurrentPrice] = {
     val url =
       s"http://iss.moex.com/iss/engines/stock/markets/shares/boards/TQBR/securities.json" +
         s"?securities=${secIds.mkString(",")}" +
@@ -118,14 +163,98 @@ object App {
         s"&iss.dp=comma&iss.meta=off" +
         s"&marketdata.columns=UPDATETIME,SECID,LAST"
 
+    println(url)
+
     val json = download(url)
 
-    val market = json.hcursor.as[Market] match {
+    val market = json.hcursor.as[Seq[CurrentPrice]] match {
       case Left(failure) => throw failure
       case Right(value)  => value
     }
 
-    market.data.map(row => row.secId -> CurrentPriceInfo(row.priceUpdateTime, row.price)).toMap
+    market.map(row => row.secId -> row).toMap
+  }
+
+  /** Список доступных значений для interval (временное разрешение) может быть получен здесь:
+    * http://iss.moex.com/iss/engines/stock/markets/shares/boards/tqbr/securities/NLMK/candleborders, где NLMK - код акции.
+    * По умолчанию 10 минут.
+    */
+  def getCandles(secId: String, from: LocalDate, till: LocalDate): Seq[Candle] = {
+    val pages = (0 until maxQueryCount).view
+      .map { start =>
+        val url =
+          s"http://iss.moex.com/iss/engines/stock/markets/shares/boards/tqbr/securities/${URLEncoder.encode(secId, "UTF-8")}/candles.json" +
+            s"?from=${from.format(dateFormatter)}" +
+            s"?till=${till.format(dateFormatter)}" +
+            s"&interval=10" +
+            s"&candles.columns=begin,end,open,close" +
+            s"&limit=$limit" +
+            s"&start=${limit * start}"
+
+        println(url)
+
+        val json = download(url)
+
+        val candles = json.hcursor.as[Seq[Candle]] match {
+          case Left(failure) => throw failure
+          case Right(value)  => value
+        }
+
+        candles
+      }
+      .takeWhile(page => page.nonEmpty) // Если запрос вернул менее 'limit' строк, значит следующий запрос вернёт 0 строк и выполнять его нет смысла.
+
+    pages.flatten.toSeq
+  }
+
+  /** Вычисляет цену закрытия сегодняшнего дня.
+    * Для этого в списке "свечей" сегодняшнего дня ищется запись на 18:40.
+    */
+  def getTodayClosePrice(secId: String): Option[BigDecimal] =
+    getCandles(secId, LocalDate.now, LocalDate.now).find(candle => candle.begin.endsWith("18:40:00")).map(_.priceOpen)
+
+  def getClosePrices(from: LocalDate, till: LocalDate, tickers: Seq[String], noDataStr: String): Seq[Seq[String]] = {
+    // Строка с заголовком
+    val header: Seq[String] = Seq("Date") ++ tickers
+
+    // Исторические цены в виде прямоугольной таблицы. Первый столбец - дата, остальные столбцы - цены.
+    val historicalPrices: Seq[Seq[String]] =
+      if (from isBefore LocalDate.now) {
+        // Исторические цены на акции
+        val historicalData: Map[ /*secId:*/ String, Map[ /*date:*/ LocalDate, /*price:*/ BigDecimal]] =
+          tickers.distinct.map(secId => secId -> getArchivePrices(secId, from, till)).toMap
+
+        // Даты, на которые имеются исторические данные
+        val dates = historicalData.flatMap { case (_ /*secId*/, prices) => prices.keys }.toSeq.distinct.sortWith(_ isBefore _)
+
+        dates.map { date =>
+          val dateColumn = Seq(date.format(dateFormatter))
+
+          val priceColumns = tickers.map { secId =>
+            val prices = historicalData(secId)
+            prices.get(date).map(formatPrice).getOrElse(noDataStr)
+          }
+
+          dateColumn ++ priceColumns
+        }
+      } else
+        Seq.empty
+
+    // Цены закрытия сегодняшнего дня
+    val todayClosePrices: Seq[String] =
+      if (/* from <= today && till >= today : */ !(from isAfter LocalDate.now) && !(till isBefore LocalDate.now)) {
+        val dateColumn = Seq(LocalDate.now.format(dateFormatter))
+
+        val priceColumns = tickers.map { secId =>
+          getTodayClosePrice(secId).map(formatPrice).getOrElse(noDataStr)
+        }
+
+        dateColumn ++ priceColumns
+      } else
+        Seq.empty
+
+    // Прямоугольная таблица с данными для печати
+    Seq(header) ++ historicalPrices ++ { if (todayClosePrices.nonEmpty) Seq(todayClosePrices) else Seq.empty }
   }
 
   def writeFile(path: String, data: Seq[Seq[String]]): Unit = {
@@ -135,52 +264,49 @@ object App {
   }
 
   def main(args: Array[String]): Unit = {
-    val from = LocalDate.now().minusDays(displayDays)
-    val till = LocalDate.now()
+    case class Config(
+        from: LocalDate = LocalDate.now().minusMonths(1),
+        till: LocalDate = LocalDate.now(),
+        tickers: Seq[String] = Seq("SBER", "GAZP", "YNDX"),
+        outputFileName: String = "",
+        noDataStr: String = "-",
+        silent: Boolean = false
+    )
 
-    // Исторические цены на акции
-    val historicalData: Map[ /*secId:*/ String, Map[ /*date:*/ LocalDate, /*price:*/ BigDecimal]] =
-      secIds.map(secId => secId -> getArchivePrices(secId, from, till)).toMap
-
-    // Текущие цены
-    val currentPrices: Map[ /*secId:*/ String, CurrentPriceInfo] = getCurrentPrices(secIds)
-
-    // Прямоугольная таблица с данными для печати
-    val table: Seq[Seq[String]] = {
-      val header: Seq[String] = Seq("Date") ++ secIds
-
-      val history: Seq[Seq[String]] = {
-        // Даты, на которые имеются исторические данные
-        val dates = historicalData.flatMap { case (_ /*secId*/, prices) => prices.keys }.toSeq.distinct.sortWith(_ isBefore _)
-
-        dates.map { date =>
-          val dateColumn = Seq(date.toString)
-          val priceColumns = secIds.map { secId =>
-            val prices = historicalData(secId)
-            prices.get(date).map(formatPrice).getOrElse("-")
-          }
-
-          dateColumn ++ priceColumns
-        }
-      }
-
-      val actual: Seq[String] = {
-        val dateColumn = Seq(LocalDate.now.toString)
-        val priceColumns = secIds.map { secId =>
-          val priceOpt = currentPrices.get(secId)
-          priceOpt.map(currentPriceInfo => formatPrice(currentPriceInfo.price)).getOrElse("-")
-        }
-
-        dateColumn ++ priceColumns
-      }
-
-      Seq(header) ++ history ++ Seq(actual)
+    val parser = new OptionParser[Config]("moex-import") {
+      head("moex-import", "0.1")
+      opt[String]("from") required () action { (x, c) =>
+        c.copy(from = LocalDate.parse(x, dateFormatter))
+      } text "date in ISO 8601 format, YYYY-MM-DD. Required."
+      opt[String]("till") action { (x, c) =>
+        c.copy(till = LocalDate.parse(x, dateFormatter))
+      } text "date in ISO 8601 format, YYYY-MM-DD. Default value is today."
+      opt[Seq[String]]("tickers") unbounded () action { (x, c) =>
+        c.copy(tickers = x)
+      } text "Moscow Exchange ticker codes (SBER,GAZP,YNDX,...)"
+      opt[String]("output-file") action { (x, c) =>
+        c.copy(outputFileName = x)
+      } text "output file name"
+      opt[String]("no-data-string") action { (x, c) =>
+        c.copy(noDataStr = x)
+      } text "output file name"
+      opt[String]("silent") action { (x, c) =>
+        c.copy(outputFileName = x)
+      } text "no output on display if specified"
     }
 
-    print(Tabulator.format(table))
-    println
+    parser.parse(args, Config()) foreach { conf =>
+      val prices = getClosePrices(conf.from, conf.till, conf.tickers, conf.noDataStr)
 
-    writeFile(outputFileName, table)
+      if (!conf.silent) {
+        print(Tabulator.format(prices))
+        println
+      }
+
+      if (conf.outputFileName.nonEmpty) {
+        writeFile(conf.outputFileName, prices)
+      }
+    }
   }
 }
 
@@ -188,7 +314,7 @@ object Tabulator {
   def format(table: Seq[Seq[Any]]): String = table match {
     case Seq() => ""
     case _ =>
-      val sizes    = for (row <- table) yield (for (cell <- row) yield if (cell == null) 0 else cell.toString.length)
+      val sizes    = for (row <- table) yield for (cell <- row) yield if (cell == null) 0 else cell.toString.length
       val colSizes = for (col <- sizes.transpose) yield col.max
       val rows     = for (row <- table) yield formatRow(row, colSizes)
       formatRows(rowSeparator(colSizes), rows)
@@ -209,5 +335,3 @@ object Tabulator {
 
   def rowSeparator(colSizes: Seq[Int]): String = colSizes map { "-" * _ } mkString ("+", "+", "+")
 }
-
-//http://iss.moex.com/iss/history/engines/stock/markets/shares/boards/TQBR/securities/SBER?from=2020-12-14&till=2020-12-16&iss.meta=off&history.columns=TRADEDATE,SECID,LEGALCLOSEPRICE
